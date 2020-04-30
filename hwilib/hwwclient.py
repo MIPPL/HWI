@@ -10,6 +10,7 @@ class HardwareWalletClient(object):
         self.password = password
         self.message_magic = b"\x18Bitcoin Signed Message:\n"
         self.is_testnet = False
+        self.coin = "Bitcoin"
         self.fingerprint = None
         self.xpub_cache = {}
         self.expert = expert

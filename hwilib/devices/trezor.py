@@ -124,7 +124,7 @@ class TrezorClient(HardwareWalletClient):
             expanded_path = tools.parse_path(path)
         except ValueError as e:
             raise BadArgumentError(str(e))
-        output = btc.get_public_node(self.client, expanded_path)
+        output = btc.get_public_node(self.client, expanded_path, coin_name=self.coin)
         if self.is_testnet:
             result = {'xpub': xpub_main_2_test(output.xpub)}
         else:
@@ -356,7 +356,7 @@ class TrezorClient(HardwareWalletClient):
         expanded_path = tools.parse_path(keypath)
         address = btc.get_address(
             self.client,
-            "Testnet" if self.is_testnet else "Bitcoin",
+            self.coin,
             expanded_path,
             show_display=True,
             script_type=proto.InputScriptType.SPENDWITNESS if bech32 else (proto.InputScriptType.SPENDP2SHWITNESS if p2sh_p2wpkh else proto.InputScriptType.SPENDADDRESS)

@@ -103,6 +103,7 @@ def process_commands(cli_args):
     parser.add_argument('--device-path', '-d', help='Specify the device path of the device to connect to')
     parser.add_argument('--device-type', '-t', help='Specify the type of device that will be connected. If `--device-path` not given, the first device of this type enumerated is used.')
     parser.add_argument('--password', '-p', help='Device password if it has one (e.g. DigitalBitbox)', default='')
+    parser.add_argument('--coin', '-c', help='Use coin (default=Bitcoin)')
     parser.add_argument('--stdinpass', help='Enter the device password on the command line', action='store_true')
     parser.add_argument('--testnet', help='Use testnet prefixes', action='store_true')
     parser.add_argument('--debug', help='Print debug statements', action='store_true')
@@ -111,7 +112,7 @@ def process_commands(cli_args):
     parser.add_argument('--stdin', help='Enter commands and arguments via stdin', action='store_true')
     parser.add_argument('--interactive', '-i', help='Use some commands interactively. Currently required for all device configuration commands', action='store_true')
     parser.add_argument('--expert', help='Do advanced things and get more detailed information returned from some commands. Use at your own risk.', action='store_true')
-
+    
     subparsers = parser.add_subparsers(description='Commands', dest='command')
     # work-around to make subparser required
     subparsers.required = True
@@ -250,6 +251,7 @@ def process_commands(cli_args):
         return {'error': 'You must specify a device type or fingerprint for all commands except enumerate', 'code': NO_DEVICE_TYPE}
 
     client.is_testnet = args.testnet
+    client.coin = "Testnet" if client.is_testnet else args.coin
 
     # Do the commands
     with handle_errors(result=result, debug=args.debug):
