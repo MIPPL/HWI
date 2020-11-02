@@ -1,15 +1,32 @@
 #! /usr/bin/env python3
 
-from .commands import backup_device, displayaddress, enumerate, find_device, \
-    get_client, getmasterxpub, getxpub, getkeypool, getdescriptors, prompt_pin, toggle_passphrase, restore_device, send_pin, setup_device, \
-    signmessage, signtx, wipe_device, install_udev_rules
+from .commands import (
+    backup_device,
+    displayaddress,
+    enumerate,
+    find_device,
+    get_client,
+    getmasterxpub,
+    getxpub,
+    getkeypool,
+    getdescriptors,
+    prompt_pin,
+    toggle_passphrase,
+    restore_device,
+    send_pin,
+    setup_device,
+    signmessage,
+    signtx,
+    wipe_device,
+    install_udev_rules,
+)
 from .errors import (
     handle_errors,
     DEVICE_CONN_ERROR,
     HELP_TEXT,
     MISSING_ARGUMENTS,
     NO_DEVICE_TYPE,
-    UNAVAILABLE_ACTION
+    UNAVAILABLE_ACTION,
 )
 from . import __version__
 
@@ -23,7 +40,7 @@ def backup_device_handler(args, client):
     return backup_device(client, label=args.label, backup_passphrase=args.backup_passphrase)
 
 def displayaddress_handler(args, client):
-    return displayaddress(client, desc=args.desc, path=args.path, sh_wpkh=args.sh_wpkh, wpkh=args.wpkh)
+    return displayaddress(client, desc=args.desc, path=args.path, sh_wpkh=args.sh_wpkh, wpkh=args.wpkh, redeem_script=args.redeem_script)
 
 def enumerate_handler(args):
     return enumerate(password=args.password)
@@ -161,6 +178,7 @@ def process_commands(cli_args):
     group.add_argument('--path', help='The BIP 32 derivation path of the key embedded in the address, default follows BIP43 convention, e.g. m/84h/0h/0h/1/*')
     displayaddr_parser.add_argument('--sh_wpkh', action='store_true', help='Display the p2sh-nested segwit address associated with this key path')
     displayaddr_parser.add_argument('--wpkh', action='store_true', help='Display the bech32 version of the address associated with this key path')
+    displayaddr_parser.add_argument('--redeem_script', help='P2SH redeem script')
     displayaddr_parser.set_defaults(func=displayaddress_handler)
 
     setupdev_parser = subparsers.add_parser('setup', help='Setup a device. Passphrase protection uses the password given by -p. Requires interactive mode')

@@ -7,7 +7,12 @@ import platform
 
 from .serializations import PSBT
 from .base58 import xpub_to_pub_hex
-from .errors import UnknownDeviceError, BAD_ARGUMENT, NOT_IMPLEMENTED
+from .errors import (
+    UnknownDeviceError,
+    UnavailableActionError,
+    BAD_ARGUMENT,
+    NOT_IMPLEMENTED,
+)
 from .descriptor import Descriptor
 from .devices import __all__ as all_devs
 from enum import Enum
@@ -57,15 +62,16 @@ def find_device(password='', device_type=None, fingerprint=None, expert=False):
         try:
             client = get_client(d['type'], d['path'], password, expert)
 
-            master_fpr = d.get('fingerprint', None)
-            if master_fpr is None:
-                master_fpr = client.get_master_fingerprint_hex()
+            if fingerprint:
+                master_fpr = d.get('fingerprint', None)
+                if master_fpr is None:
+                    master_fpr = client.get_master_fingerprint_hex()
 
-            if fingerprint and master_fpr != fingerprint:
-                client.close()
-                continue
+                if master_fpr != fingerprint:
+                    client.close()
+                    continue
             return client
-        except:
+        except Exception:
             if client:
                 client.close()
             pass # Ignore things we wouldn't get fingerprints for
@@ -202,10 +208,12 @@ def getdescriptors(client, account=0):
 
     for internal in [False, True]:
         descriptors = []
-        desc1 = getdescriptor(client, master_fpr=master_fpr, testnet=client.is_testnet, internal=internal, addr_type=AddressType.PKH, account=account)
-        desc2 = getdescriptor(client, master_fpr=master_fpr, testnet=client.is_testnet, internal=internal, addr_type=AddressType.SH_WPKH, account=account)
-        desc3 = getdescriptor(client, master_fpr=master_fpr, testnet=client.is_testnet, internal=internal, addr_type=AddressType.WPKH, account=account)
-        for desc in [desc1, desc2, desc3]:
+        for addr_type in (AddressType.PKH, AddressType.SH_WPKH, AddressType.WPKH):
+            try:
+                desc = getdescriptor(client, master_fpr=master_fpr, testnet=client.is_testnet, internal=internal, addr_type=addr_type, account=account)
+            except UnavailableActionError:
+                # Device does not support this address type or network. Skip.
+                continue
             if not isinstance(desc, Descriptor):
                 return desc
             descriptors.append(desc.serialize())
@@ -216,17 +224,34 @@ def getdescriptors(client, account=0):
 
     return result
 
-def displayaddress(client, path=None, desc=None, sh_wpkh=False, wpkh=False):
+def displayaddress(client, path=None, desc=None, sh_wpkh=False, wpkh=False, redeem_script=None):
     if path is not None:
         if sh_wpkh and wpkh:
             return {'error': 'Both `--wpkh` and `--sh_wpkh` can not be selected at the same time.', 'code': BAD_ARGUMENT}
-        return client.display_address(path, sh_wpkh, wpkh)
+        return client.display_address(path, sh_wpkh, wpkh, redeem_script=redeem_script)
     elif desc is not None:
         if sh_wpkh or wpkh:
             return {'error': ' `--wpkh` and `--sh_wpkh` can not be combined with --desc', 'code': BAD_ARGUMENT}
+        if redeem_script:
+            return {'error': ' `--redeem_script` can not be combined with --desc', 'code': BAD_ARGUMENT}
         descriptor = Descriptor.parse(desc, client.is_testnet)
         if descriptor is None:
             return {'error': 'Unable to parse descriptor: ' + desc, 'code': BAD_ARGUMENT}
+        if descriptor.sh or descriptor.sh_wsh or descriptor.wsh:
+            path = ''
+            redeem_script = format(80 + int(descriptor.multisig_M), 'x')
+            xpubs_descriptor = False
+            for i in range(0, descriptor.multisig_N):
+                path += descriptor.origin_fingerprint[i] + descriptor.origin_path[i]
+                if not descriptor.path_suffix[i]:
+                    redeem_script += '21' + descriptor.base_key[i]
+                else:
+                    path += descriptor.path_suffix[i]
+                    xpubs_descriptor = True
+                path += ','
+            path = path[0:-1]
+            redeem_script += format(80 + descriptor.multisig_N, 'x') + 'ae'
+            return client.display_address(path, descriptor.sh_wpkh or descriptor.sh_wsh, descriptor.wpkh or descriptor.wsh, redeem_script, descriptor=descriptor if xpubs_descriptor else None)
         if descriptor.m_path is None:
             return {'error': 'Descriptor missing origin info: ' + desc, 'code': BAD_ARGUMENT}
         if descriptor.origin_fingerprint != client.get_master_fingerprint_hex():
