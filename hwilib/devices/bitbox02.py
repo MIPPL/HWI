@@ -10,6 +10,8 @@ from typing import (
     Sequence,
     TypeVar,
 )
+from binascii import unhexlify
+import struct
 import builtins
 import sys
 from functools import wraps
@@ -33,10 +35,6 @@ from ..errors import (
     DEVICE_NOT_INITIALIZED,
     handle_errors,
     common_err_msgs,
-)
-from ..key import (
-    KeyOriginInfo,
-    parse_path,
 )
 
 import hid  # type: ignore
@@ -135,6 +133,40 @@ class CLINoiseConfig(util.BitBoxAppNoiseConfig):
             )
 
 
+def _parse_path(nstr: str) -> Sequence[int]:
+    """
+    Adapted from trezorlib.tools.parse_path.
+    Convert BIP32 path string to list of uint32 integers with hardened flags.
+    Several conventions are supported to set the hardened flag: -1, 1', 1h
+
+    e.g.: "0/1h/1" -> [0, 0x80000001, 1]
+
+    :param nstr: path string
+    :return: list of integers
+    """
+    if not nstr:
+        return []
+
+    n = nstr.split("/")
+
+    # m/a/b/c => a/b/c
+    if n[0] == "m":
+        n = n[1:]
+
+    def str_to_harden(x: str) -> int:
+        if x.startswith("-"):
+            return abs(int(x)) + HARDENED
+        elif x.endswith(("h", "'")):
+            return int(x[:-1]) + HARDENED
+        else:
+            return int(x)
+
+    try:
+        return [str_to_harden(x) for x in n]
+    except Exception:
+        raise ValueError("Invalid BIP32 path", nstr)
+
+
 def enumerate(password: str = "") -> List[Dict[str, object]]:
     """
     Enumerate all BitBox02 devices. Bootloaders excluded.
@@ -144,6 +176,10 @@ def enumerate(password: str = "") -> List[Dict[str, object]]:
         path = device_info["path"].decode()
         client = Bitbox02Client(path)
         client.set_noise_config(SilentNoiseConfig())
+        d_data: Dict[str, object] = {}
+        bb02 = None
+        with handle_errors(common_err_msgs["enumerate"], d_data):
+            bb02 = client.init(expect_initialized=None)
         version, platform, edition, unlocked = bitbox02.BitBox02.get_info(
             client.transport
         )
@@ -156,25 +192,32 @@ def enumerate(password: str = "") -> List[Dict[str, object]]:
 
         assert isinstance(edition, BitBox02Edition)
 
-        d_data = {
-            "type": "bitbox02",
-            "path": path,
-            "model": {
-                BitBox02Edition.MULTI: "bitbox02_multi",
-                BitBox02Edition.BTCONLY: "bitbox02_btconly",
-            }[edition],
-            "needs_pin_sent": False,
-            "needs_passphrase_sent": False,
-        }
+        d_data.update(
+            {
+                "type": "bitbox02",
+                "path": path,
+                "model": {
+                    BitBox02Edition.MULTI: "bitbox02_multi",
+                    BitBox02Edition.BTCONLY: "bitbox02_btconly",
+                }[edition],
+                "needs_pin_sent": False,
+                "needs_passphrase_sent": False,
+            }
+        )
 
-        with handle_errors(common_err_msgs["enumerate"], d_data):
-            if not unlocked:
-                raise DeviceNotReadyError(
-                    "Please load wallet to unlock."
-                    if _using_external_gui
-                    else "Please use any subcommand to unlock"
-                )
-            d_data["fingerprint"] = client.get_master_fingerprint_hex()
+        if bb02 is not None:
+            with handle_errors(common_err_msgs["enumerate"], d_data):
+                if not bb02.device_info()["initialized"]:
+                    raise DeviceNotReadyError(
+                        "BitBox02 is not initialized. Please initialize it using the BitBoxApp."
+                    )
+                elif not unlocked:
+                    raise DeviceNotReadyError(
+                        "Please load wallet to unlock."
+                        if _using_external_gui
+                        else "Please use any subcommand to unlock"
+                    )
+                d_data["fingerprint"] = client.get_master_fingerprint_hex()
 
         result.append(d_data)
 
@@ -214,7 +257,7 @@ class Bitbox02Client(HardwareWalletClient):
         Initializes a new BitBox02 client instance.
         """
         super().__init__(path, password=password, expert=expert)
-        if not password:
+        if password:
             raise BadArgumentError(
                 "The BitBox02 does not accept a passphrase from the host. Please enable the passphrase option and enter the passphrase on the device during unlock."
             )
@@ -232,7 +275,7 @@ class Bitbox02Client(HardwareWalletClient):
     def set_noise_config(self, noise_config: BitBoxNoiseConfig) -> None:
         self.noise_config = noise_config
 
-    def init(self, expect_initialized: bool = True) -> bitbox02.BitBox02:
+    def init(self, expect_initialized: Optional[bool] = True) -> bitbox02.BitBox02:
         if self.bb02 is not None:
             return self.bb02
 
@@ -250,14 +293,17 @@ class Bitbox02Client(HardwareWalletClient):
                     raise
             self.bb02 = bb02
             is_initialized = bb02.device_info()["initialized"]
-            if expect_initialized:
-                if not is_initialized:
-                    raise HWWError(
-                        "The BitBox02 must be initialized first.",
-                        DEVICE_NOT_INITIALIZED,
+            if expect_initialized is not None:
+                if expect_initialized:
+                    if not is_initialized:
+                        raise HWWError(
+                            "The BitBox02 must be initialized first.",
+                            DEVICE_NOT_INITIALIZED,
+                        )
+                elif is_initialized:
+                    raise UnavailableActionError(
+                        "The BitBox02 must be wiped before setup."
                     )
-            elif is_initialized:
-                raise UnavailableActionError("The BitBox02 must be wiped before setup.")
 
             return bb02
         raise Exception(
@@ -267,16 +313,13 @@ class Bitbox02Client(HardwareWalletClient):
     def close(self) -> None:
         self.transport.close()
 
-    def get_master_fingerprint(self) -> bytes:
+    def get_master_fingerprint_hex(self) -> str:
         """
         HWI by default retrieves the fingerprint at m/ by getting the xpub at m/0', which contains the parent fingerprint.
         The BitBox02 does not support querying arbitrary keypaths, but has an api call return the fingerprint at m/.
         """
         bb02 = self.init()
-        return bb02.root_fingerprint()
-
-    def get_master_fingerprint_hex(self) -> str:
-        return self.get_master_fingerprint().hex()
+        return bb02.root_fingerprint().hex()
 
     def prompt_pin(self) -> Dict[str, Union[bool, str, int]]:
         raise UnavailableActionError(
@@ -304,7 +347,7 @@ class Bitbox02Client(HardwareWalletClient):
         )
 
     def get_pubkey_at_path(self, bip32_path: str) -> Dict[str, str]:
-        path_uint32s = parse_path(bip32_path)
+        path_uint32s = _parse_path(bip32_path)
         try:
             xpub = self._get_xpub(path_uint32s)
         except Bitbox02Exception as exc:
@@ -336,7 +379,7 @@ class Bitbox02Client(HardwareWalletClient):
                 "The BitBox02 does not support legacy p2pkh addresses"
             )
         address = self.init().btc_address(
-            parse_path(bip32_path),
+            _parse_path(bip32_path),
             coin=self._get_coin(),
             script_config=script_config,
             display=True,
@@ -346,22 +389,23 @@ class Bitbox02Client(HardwareWalletClient):
     @bitbox02_exception
     def sign_tx(self, psbt: PSBT) -> Dict[str, str]:
         def find_our_key(
-            keypaths: Dict[bytes, KeyOriginInfo]
+            keypaths: Dict[bytes, Sequence[int]]
         ) -> Tuple[Optional[bytes], Optional[Sequence[int]]]:
             """
             Keypaths is a map of pubkey to hd keypath, where the first element in the keypath is the master fingerprint. We attempt to find the key which belongs to the BitBox02 by matching the fingerprint, and then matching the pubkey.
             Returns the pubkey and the keypath, without the fingerprint.
             """
-            for pubkey, origin in keypaths.items():
+            for pubkey, keypath_with_fingerprint in keypaths.items():
+                fp, keypath = keypath_with_fingerprint[0], keypath_with_fingerprint[1:]
                 # Cheap check if the key is ours.
-                if origin.fingerprint != master_fp:
+                if fp != master_fp:
                     continue
 
                 # Expensive check if the key is ours.
                 # TODO: check for fingerprint collision
                 # keypath_account = keypath[:-2]
 
-                return pubkey, origin.path
+                return pubkey, keypath
             return None, None
 
         def get_simple_type(
@@ -379,7 +423,7 @@ class Bitbox02Client(HardwareWalletClient):
                 "Input script type not recognized of input {}.".format(input_index)
             )
 
-        master_fp = self.get_master_fingerprint()
+        master_fp = struct.unpack("<I", unhexlify(self.get_master_fingerprint_hex()))[0]
 
         inputs: List[bitbox02.BTCInputType] = []
 
